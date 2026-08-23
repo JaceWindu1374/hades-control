@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hades Hair — Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --blue-deep: #02042D;
+    --blue-mid: #0A2050;
+    --blue-bright: #46A0FF;
+    --flare-red: #BE0000;
+    --flare-orange: #CD1400;
+    --flare-gold: #FF8C00;
+    --flare-bright: #FFC300;
+    --ink: #F4F6FA;
+    --ink-dim: #9AA6C0;
+    --panel: rgba(255,255,255,0.06);
+    --panel-border: rgba(255,255,255,0.12);
+    --transition-slow: 900ms ease;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    color: var(--ink);
+    background: radial-gradient(circle at 50% 20%, var(--blue-mid) 0%, var(--blue-deep) 65%);
+    transition: background var(--transition-slow);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body.flare-active {
+    background: radial-gradient(circle at 50% 20%, var(--flare-orange) 0%, #1a0400 70%);
+  }
+
+  /* ---- Top bar: connection status ---- */
+  .topbar {
+    display: flex;
+    justify-content: center;
+    padding: 18px 16px 6px;
+  }
+
+  .conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #566;
+    transition: background 300ms, box-shadow 300ms;
+  }
+
+  .conn-pill.connected .conn-dot {
+    background: var(--blue-bright);
+    box-shadow: 0 0 8px var(--blue-bright);
+  }
+
+  body.flare-active .conn-pill.connected .conn-dot {
+    background: var(--flare-bright);
+    box-shadow: 0 0 8px var(--flare-bright);
+  }
+
+  /* ---- Main HUD ---- */
+  .hud {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 24px;
+    gap: 10px;
+  }
+
+  .scene-label {
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .scene-name {
+    font-size: clamp(38px, 11vw, 64px);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+
+  .timer {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(48px, 15vw, 88px);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    margin-top: 4px;
+  }
+
+  .next-event {
+    margin-top: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    color: var(--ink-dim);
+    min-height: 20px;
+  }
+
+  .next-event .next-value {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* ---- Bottom controls ---- */
+  .controls {
+    display: flex;
+    gap: 12px;
+    padding: 20px 20px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  button {
+    flex: 1;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 20px 12px;
+    border-radius: 14px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+    transition: transform 100ms, background 200ms;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  button:active {
+    transform: scale(0.96);
+  }
+
+  button.primary {
+    background: var(--blue-bright);
+    color: #041022;
+    border-color: transparent;
+  }
+
+  body.flare-active button.primary {
+    background: var(--flare-bright);
+    color: #2a0a00;
+  }
+
+  button.danger {
+    background: rgba(255,255,255,0.04);
+    color: #ff8b8b;
+    border-color: rgba(255,80,80,0.3);
+  }
+
+  button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .connect-screen {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  .connect-screen h1 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .connect-screen p {
+    color: var(--ink-dim);
+    font-size: 14px;
+    max-width: 280px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .error-msg {
+    color: #ff8b8b;
+    font-size: 13px;
+    max-width: 280px;
+    line-height: 1.4;
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+  <div id="connectScreen" class="connect-screen">
+    <h1>Hades Hair Control</h1>
+    <p>Connect to the headpiece over Bluetooth to start, pause, and stop the fire sequence.</p>
+    <button class="primary" id="connectBtn" style="max-width:220px;">Connect</button>
+    <div class="error-msg hidden" id="errorMsg"></div>
+  </div>
+
+  <div id="mainUI" class="hidden" style="display:flex; flex-direction:column; height:100%;">
+    <div class="topbar">
+      <div class="conn-pill" id="connPill">
+        <span class="conn-dot"></span>
+        <span id="connLabel">Connecting…</span>
+      </div>
+    </div>
+
+    <div class="hud">
+      <div class="scene-label" id="runStateLabel">IDLE</div>
+      <div class="scene-name" id="sceneName">—</div>
+      <div class="timer" id="timerDisplay">00:00</div>
+      <div class="next-event" id="nextEvent"></div>
+    </div>
+
+    <div class="controls" id="controls">
+      <!-- Buttons injected dynamically based on state -->
+    </div>
+  </div>
+
+<script>
+const SERVICE_UUID = 'a7d83bbc-fdf0-43d2-86ad-bd7685da610a';
+const COMMAND_CHAR_UUID = '406af305-cabf-4819-bf42-5076c3902712';
+const STATUS_CHAR_UUID = '9729b55a-ca1c-47b6-a3dd-21cf5854789a';
+
+let device, server, commandChar, statusChar;
+
+const FIRE_LABELS = {
+  NONE: '—',
+  BF1: 'Ambient Blue',
+  RF1: 'Red Fire 1',
+  RF2: 'Red Fire 2',
+  RF3: 'Explosion',
+  OFF: 'Cooldown'
+};
+
+const connectScreen = document.getElementById('connectScreen');
+const mainUI = document.getElementById('mainUI');
+const connectBtn = document.getElementById('connectBtn');
+const errorMsg = document.getElementById('errorMsg');
+const connPill = document.getElementById('connPill');
+const connLabel = document.getElementById('connLabel');
+const runStateLabel = document.getElementById('runStateLabel');
+const sceneName = document.getElementById('sceneName');
+const timerDisplay = document.getElementById('timerDisplay');
+const nextEvent = document.getElementById('nextEvent');
+const controls = document.getElementById('controls');
+
+function formatMs(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function formatSecondsShort(ms) {
+  return (ms / 1000).toFixed(1) + 's';
+}
+
+function setFlareBackground(isFlare) {
+  document.body.classList.toggle('flare-active', isFlare);
+}
+
+function renderButtons(runState) {
+  controls.innerHTML = '';
+  const make = (label, cls, cmd) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = () => sendCommand(cmd);
+    return b;
+  };
+
+  if (runState === 'IDLE') {
+    controls.appendChild(make('Start', 'primary', 'START'));
+  } else if (runState === 'RUNNING') {
+    controls.appendChild(make('Pause', 'primary', 'PAUSE'));
+    controls.appendChild(make('Stop', 'danger', 'STOP'));
+  } else if (runState === 'PAUSED') {
+    controls.appendChild(make('Resume', 'primary', 'RESUME'));
+    controls.appendChild(make('Stop', 'danger', 'STOP'));
+  }
+}
+
+function handleStatus(value) {
+  // Format: STATE|elapsedMs|fireName|msUntilNext
+  const parts = value.split('|');
+  if (parts.length < 4) return;
+
+  const [state, elapsedStr, fire, nextStr] = parts;
+  const elapsed = parseInt(elapsedStr, 10) || 0;
+  const msUntilNext = parseInt(nextStr, 10);
+
+  runStateLabel.textContent = state;
+  sceneName.textContent = FIRE_LABELS[fire] || fire;
+  timerDisplay.textContent = formatMs(elapsed);
+
+  const isFlare = (fire === 'RF1' || fire === 'RF2' || fire === 'RF3');
+  setFlareBackground(isFlare);
+
+  if (state === 'RUNNING' && msUntilNext >= 0) {
+    const nextWindowFire = guessNextFire(fire, elapsed);
+    nextEvent.innerHTML = 'Next: <span class="next-value">' + nextWindowFire + ' in ' + formatSecondsShort(msUntilNext) + '</span>';
+  } else if (state === 'IDLE') {
+    nextEvent.textContent = '';
+  } else {
+    nextEvent.textContent = '';
+  }
+
+  renderButtons(state);
+}
+
+// Best-effort label for the upcoming event — the firmware only sends the
+// countdown, not which fire is next, so this infers it from the known
+// timeline order. Falls back to "Fire" if it can't tell.
+function guessNextFire(currentFire, elapsedMs) {
+  // Known window starts (ms) — keep in sync with the firmware's rfWindows[]
+  const windows = [
+    { start: 16000, fire: 'Red Fire 1' },
+    { start: 23500, fire: 'Red Fire 2' },
+    { start: 36750, fire: 'Explosion' }
+  ];
+  for (const w of windows) {
+    if (w.start > elapsedMs) return w.fire;
+  }
+  return 'Fire';
+}
+
+async function sendCommand(cmd) {
+  if (!commandChar) return;
+  try {
+    const encoder = new TextEncoder();
+    await commandChar.writeValue(encoder.encode(cmd));
+  } catch (err) {
+    console.error('Write failed:', err);
+  }
+}
+
+async function connectBLE() {
+  errorMsg.classList.add('hidden');
+
+  if (!navigator.bluetooth) {
+    errorMsg.textContent = 'Web Bluetooth is not available. Make sure you\'re using Chrome on Android over HTTPS.';
+    errorMsg.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }]
+    });
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    connectScreen.classList.add('hidden');
+    mainUI.classList.remove('hidden');
+    mainUI.style.display = 'flex';
+
+    server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    commandChar = await service.getCharacteristic(COMMAND_CHAR_UUID);
+    statusChar = await service.getCharacteristic(STATUS_CHAR_UUID);
+
+    await statusChar.startNotifications();
+    statusChar.addEventListener('characteristicvaluechanged', (event) => {
+      const decoder = new TextDecoder();
+      const value = decoder.decode(event.target.value);
+      handleStatus(value);
+    });
+
+    connPill.classList.add('connected');
+    connLabel.textContent = 'Connected';
+
+  } catch (err) {
+    console.error(err);
+    connectScreen.classList.remove('hidden');
+    mainUI.classList.add('hidden');
+    errorMsg.textContent = 'Connection failed: ' + err.message;
+    errorMsg.classList.remove('hidden');
+  }
+}
+
+function onDisconnected() {
+  connPill.classList.remove('connected');
+  connLabel.textContent = 'Disconnected';
+  controls.innerHTML = '';
+  runStateLabel.textContent = 'DISCONNECTED';
+  sceneName.textContent = '—';
+  timerDisplay.textContent = '00:00';
+  nextEvent.textContent = '';
+  setFlareBackground(false);
+}
+
+connectBtn.addEventListener('click', connectBLE);
+</script>
+</body>
+</html>
