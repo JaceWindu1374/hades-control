@@ -219,6 +219,22 @@
     line-height: 1.4;
   }
 
+  .toast {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(190,0,0,0.92);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 20;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    transition: opacity 200ms;
+  }
+
   .hidden { display: none !important; }
 </style>
 </head>
@@ -230,6 +246,8 @@
     <button class="primary" id="connectBtn" style="max-width:220px;">Connect</button>
     <div class="error-msg hidden" id="errorMsg"></div>
   </div>
+
+  <div id="toast" class="toast hidden"></div>
 
   <div id="mainUI" class="hidden" style="display:flex; flex-direction:column; height:100%;">
     <div class="topbar">
@@ -279,6 +297,17 @@ const sceneName = document.getElementById('sceneName');
 const timerDisplay = document.getElementById('timerDisplay');
 const nextEvent = document.getElementById('nextEvent');
 const controls = document.getElementById('controls');
+const toast = document.getElementById('toast');
+
+let writeInProgress = false;
+let toastTimeout = null;
+
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.remove('hidden');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => toast.classList.add('hidden'), 2500);
+}
 
 function formatMs(ms) {
   const totalSec = Math.floor(ms / 1000);
@@ -301,7 +330,7 @@ function renderButtons(runState) {
     const b = document.createElement('button');
     b.textContent = label;
     if (cls) b.className = cls;
-    b.onclick = () => sendCommand(cmd);
+    b.onclick = () => sendCommand(cmd, b);
     return b;
   };
 
@@ -363,14 +392,48 @@ function guessNextFire(currentFire, elapsedMs) {
   return 'Fire';
 }
 
-async function sendCommand(cmd) {
+async function sendCommand(cmd, buttonEl) {
   if (!commandChar) return;
-  try {
-    const encoder = new TextEncoder();
-    await commandChar.writeValue(encoder.encode(cmd));
-  } catch (err) {
-    console.error('Write failed:', err);
+
+  // Prevent overlapping GATT operations — sending a second command while
+  // one is still in flight is a common cause of silent drops on BLE.
+  if (writeInProgress) return;
+  writeInProgress = true;
+  if (buttonEl) buttonEl.disabled = true;
+
+  const encoder = new TextEncoder();
+  const data = encoder.encode(cmd);
+
+  const MAX_ATTEMPTS = 3;
+  let succeeded = false;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS && !succeeded; attempt++) {
+    try {
+      // Explicitly request "write with response" (an acknowledged write)
+      // rather than the legacy writeValue(), which can silently behave as
+      // an unacknowledged "write without response" on some browsers/BLE
+      // stacks — this is likely why commands were occasionally getting
+      // dropped without any visible error.
+      if (commandChar.writeValueWithResponse) {
+        await commandChar.writeValueWithResponse(data);
+      } else {
+        await commandChar.writeValue(data);
+      }
+      succeeded = true;
+    } catch (err) {
+      console.error('Write attempt ' + attempt + ' for "' + cmd + '" failed:', err);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 150)); // brief pause before retrying
+      }
+    }
   }
+
+  if (!succeeded) {
+    showToast('"' + cmd + '" failed to send — try again');
+  }
+
+  if (buttonEl) buttonEl.disabled = false;
+  writeInProgress = false;
 }
 
 async function connectBLE() {
