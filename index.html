@@ -480,20 +480,40 @@ async function handleStartTap(buttonEl) {
     return;
   }
 
-  const ok = await sendCommand('SCHEDULE:' + SCHEDULE_LEAD_MS, buttonEl);
-  if (!ok) return; // sendCommand already surfaced a failure toast
+  // Guard against double-tapping Start during the brief window before
+  // the button updates to "Stop" (the countdown now begins before the
+  // write is confirmed, so this window still technically exists).
+  if (countdownInterval || scheduledAudioTimeout) return;
 
-  // Both the ESP32 (via SCHEDULE:<ms>) and this page now independently
-  // count down the SAME duration from THIS moment, each on its own local
-  // clock — this is what keeps the LEDs and audio in sync without
-  // depending on a live signal at the actual start instant.
+  // Start the local countdown and schedule the audio IMMEDIATELY, in
+  // parallel with sending the command — NOT after awaiting confirmation
+  // that the write was acknowledged. The ESP32 begins its own countdown
+  // the instant it physically receives the write, which happens almost
+  // immediately at the radio level. Waiting for the full write-
+  // acknowledgment round trip to resolve on this side before starting
+  // our own countdown was reintroducing exactly the kind of live-signal
+  // dependency this scheduling design was meant to avoid — and that
+  // round trip turned out to take several extra seconds, which is what
+  // was causing the audio to lag well behind the LEDs.
   const startAtPerf = performance.now() + SCHEDULE_LEAD_MS;
   beginCountdownUI(startAtPerf);
-
   scheduledAudioTimeout = setTimeout(() => {
     audioEl.currentTime = 0;
     audioEl.play().catch((err) => console.error('Audio play failed:', err));
   }, SCHEDULE_LEAD_MS);
+
+  const ok = await sendCommand('SCHEDULE:' + SCHEDULE_LEAD_MS, buttonEl);
+  if (!ok) {
+    // The command never actually made it — cancel the optimistic
+    // countdown/audio schedule so we don't play music with no LEDs to
+    // match it, and fall back to a plain idle display.
+    cancelScheduledAudio();
+    runStateLabel.textContent = 'IDLE';
+    sceneName.textContent = '—';
+    timerDisplay.textContent = '00:00';
+    nextEvent.textContent = '';
+    renderButtons('IDLE');
+  }
 }
 
 async function handleStopTap(buttonEl) {
