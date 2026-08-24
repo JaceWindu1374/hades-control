@@ -548,7 +548,7 @@ brightnessSlider.addEventListener('input', () => {
 
 brightnessSlider.addEventListener('change', () => {
   const val = brightnessSlider.value;
-  sendCommand('BRIGHT:' + val);
+  sendCommand('BRIGHT:' + val).catch((err) => console.error('Brightness command error:', err));
   brightnessSliderActive = false;
 });
 
@@ -769,35 +769,45 @@ async function sendCommand(cmd, buttonEl) {
   const data = encoder.encode(cmd);
 
   const MAX_ATTEMPTS = 3;
+  const WRITE_TIMEOUT_MS = 2500; // guards against a write that never resolves OR rejects — without this, a single hung write leaves writeInProgress stuck true forever, silently blocking every command after it (this is what was happening: adjusting brightness could hang, then Start/Stop/scene taps would do nothing with no error shown)
   let succeeded = false;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS && !succeeded; attempt++) {
-    try {
-      // Explicitly request "write with response" (an acknowledged write)
-      // rather than the legacy writeValue(), which can silently behave as
-      // an unacknowledged "write without response" on some browsers/BLE
-      // stacks — this is likely why commands were occasionally getting
-      // dropped without any visible error.
-      if (commandChar.writeValueWithResponse) {
-        await commandChar.writeValueWithResponse(data);
-      } else {
-        await commandChar.writeValue(data);
-      }
-      succeeded = true;
-    } catch (err) {
-      console.error('Write attempt ' + attempt + ' for "' + cmd + '" failed:', err);
-      if (attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, 150)); // brief pause before retrying
+  try {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !succeeded; attempt++) {
+      try {
+        // Explicitly request "write with response" (an acknowledged write)
+        // rather than the legacy writeValue(), which can silently behave as
+        // an unacknowledged "write without response" on some browsers/BLE
+        // stacks.
+        const writePromise = commandChar.writeValueWithResponse
+          ? commandChar.writeValueWithResponse(data)
+          : commandChar.writeValue(data);
+
+        await Promise.race([
+          writePromise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('write timed out')), WRITE_TIMEOUT_MS))
+        ]);
+        succeeded = true;
+      } catch (err) {
+        console.error('Write attempt ' + attempt + ' for "' + cmd + '" failed:', err);
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 150)); // brief pause before retrying
+        }
       }
     }
+
+    if (!succeeded) {
+      showToast('"' + cmd + '" failed to send — try again');
+    }
+  } finally {
+    // ALWAYS runs, even if something above throws unexpectedly — this is
+    // what guarantees writeInProgress can never get permanently stuck,
+    // which is the actual bug that made Start (and potentially Stop)
+    // silently stop responding after touching the brightness slider.
+    if (buttonEl) buttonEl.disabled = false;
+    writeInProgress = false;
   }
 
-  if (!succeeded) {
-    showToast('"' + cmd + '" failed to send — try again');
-  }
-
-  if (buttonEl) buttonEl.disabled = false;
-  writeInProgress = false;
   return succeeded;
 }
 
