@@ -362,6 +362,31 @@ function setAudioReady(isReady) {
   audioPill.classList.toggle('connected', isReady);
 }
 
+// Silently warms up the browser's audio playback pipeline ahead of time
+// (muted play, then immediate pause + rewind) — without this, the FIRST
+// real .play() call in a session can take a noticeable moment to
+// actually produce sound (buffering/decoding startup latency), which is
+// very likely what was causing the audio to lag behind the LEDs. This
+// must run in response to a genuine user gesture (a click), since
+// browsers block autoplay otherwise — we call it both right after a
+// file is selected and right when Connect is tapped, so it's covered
+// whether this is the first time loading audio or a returning visit
+// with audio already cached from before.
+async function primeAudio() {
+  if (!audioEl.src) return;
+  try {
+    audioEl.load();
+    const wasMuted = audioEl.muted;
+    audioEl.muted = true;
+    await audioEl.play();
+    audioEl.pause();
+    audioEl.currentTime = 0;
+    audioEl.muted = wasMuted;
+  } catch (err) {
+    console.error('Audio priming failed (will still try to play normally later):', err);
+  }
+}
+
 async function initAudio() {
   try {
     const blob = await loadAudioBlob();
@@ -383,6 +408,7 @@ audioFileInput.addEventListener('change', async (e) => {
     await saveAudioBlob(file);
     audioEl.src = URL.createObjectURL(file);
     setAudioReady(true);
+    await primeAudio();
     showToast('Audio loaded and saved for next time');
   } catch (err) {
     console.error('Failed to save audio:', err);
@@ -600,6 +626,11 @@ async function connectBLE() {
     errorMsg.classList.remove('hidden');
     return;
   }
+
+  // Runs on the same tap as Connect — a genuine user gesture — so any
+  // audio already cached from a previous visit gets warmed up now,
+  // well before Start is ever pressed.
+  primeAudio();
 
   try {
     device = await navigator.bluetooth.requestDevice({
