@@ -136,6 +136,87 @@
     font-weight: 600;
   }
 
+  /* ---- Brightness slider (near top — away from Start/Stop so it can't get bumped) ---- */
+  .brightness-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 20px 10px;
+  }
+
+  .brightness-row .icon {
+    font-size: 14px;
+    color: var(--ink-dim);
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--panel);
+    outline: none;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--blue-bright);
+    border: 2px solid rgba(255,255,255,0.6);
+    cursor: pointer;
+  }
+
+  body.flare-active input[type="range"]::-webkit-slider-thumb {
+    background: var(--flare-bright);
+  }
+
+  /* ---- Scene grid ---- */
+  .scene-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 6px 20px;
+  }
+
+  .scene-tile {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    padding: 16px 8px;
+    border-radius: 12px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+    text-align: center;
+    transition: transform 100ms, background 200ms, border-color 200ms;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .scene-tile:active {
+    transform: scale(0.96);
+  }
+
+  .scene-tile.selected {
+    background: var(--blue-bright);
+    color: #041022;
+    border-color: transparent;
+  }
+
+  body.flare-active .scene-tile.selected {
+    background: var(--flare-bright);
+    color: #2a0a00;
+  }
+
   /* ---- Bottom controls ---- */
   .controls {
     display: flex;
@@ -242,7 +323,7 @@
 
   <div id="connectScreen" class="connect-screen">
     <h1>Hades Hair Control</h1>
-    <p>Connect to the headpiece over Bluetooth to start and stop the fire sequence, synced with the audio.</p>
+    <p>Connect to the headpiece over Bluetooth to pick a scene, adjust brightness, and (for Hades) start it in sync with the audio.</p>
     <button class="primary" id="connectBtn" style="max-width:220px;">Connect</button>
     <div class="error-msg hidden" id="errorMsg"></div>
   </div>
@@ -261,8 +342,23 @@
       </div>
     </div>
 
+    <div class="brightness-row">
+      <span class="icon">☾</span>
+      <input type="range" id="brightnessSlider" min="0" max="180" value="180">
+      <span class="icon">☀</span>
+    </div>
+
     <audio id="audioEl" preload="auto"></audio>
     <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
+
+    <div class="scene-grid" id="sceneGrid">
+      <button class="scene-tile" id="tile-BF1" data-scene="BF1">Blue Flame</button>
+      <button class="scene-tile" id="tile-RF2" data-scene="RF2">Mad Hades</button>
+      <button class="scene-tile" id="tile-EXPLOSION" data-scene="EXPLOSION">Explosion</button>
+      <button class="scene-tile" id="tile-HAUNTED" data-scene="HAUNTED">Haunted Mansion</button>
+      <button class="scene-tile" id="tile-DISCO" data-scene="DISCO">Disco</button>
+      <button class="scene-tile" id="tile-HADES" data-scene="HADES">Hades (Scripted)</button>
+    </div>
 
     <div class="hud">
       <div class="scene-label" id="runStateLabel">IDLE</div>
@@ -272,7 +368,7 @@
     </div>
 
     <div class="controls" id="controls">
-      <!-- Buttons injected dynamically based on state -->
+      <!-- Stop (always, when relevant) and Hades' Start (conditionally) injected dynamically -->
     </div>
   </div>
 
@@ -283,6 +379,7 @@ const STATUS_CHAR_UUID = '9729b55a-ca1c-47b6-a3dd-21cf5854789a';
 
 let device, server, commandChar, statusChar;
 let lastRenderedState = null; // tracks the last state buttons were rendered for, so we don't rebuild them on every periodic status update — only on actual state changes
+let lastRenderedScene = null; // tracks which scene tile is currently highlighted, same reasoning
 
 const FIRE_LABELS = {
   NONE: '—',
@@ -290,7 +387,11 @@ const FIRE_LABELS = {
   RF1: 'Red Fire 1',
   RF2: 'Red Fire 2',
   RF3: 'Explosion',
-  OFF: 'Cooldown'
+  OFF: 'Cooldown',
+  EXPLOSION: 'Explosion',
+  HAUNTED: 'Haunted Mansion',
+  DISCO: 'Disco',
+  HADES: 'Hades'
 };
 
 const connectScreen = document.getElementById('connectScreen');
@@ -310,6 +411,11 @@ const audioDot = document.getElementById('audioDot');
 const audioLabel = document.getElementById('audioLabel');
 const audioEl = document.getElementById('audioEl');
 const audioFileInput = document.getElementById('audioFileInput');
+const brightnessSlider = document.getElementById('brightnessSlider');
+const sceneGrid = document.getElementById('sceneGrid');
+const sceneTiles = sceneGrid.querySelectorAll('.scene-tile');
+
+let brightnessSliderActive = false; // true while the user is actively dragging — suppresses remote status updates from fighting the drag
 
 let writeInProgress = false;
 let toastTimeout = null;
@@ -418,6 +524,34 @@ audioFileInput.addEventListener('change', async (e) => {
 
 initAudio();
 
+// ---- Scene tile taps ----
+// Every tile sends the SAME command shape (SELECT:<scene>) — the
+// firmware itself decides whether that means "start immediately" (the
+// 5 standalone scenes) or "just load it, wait for Start" (Hades only).
+// The page doesn't need to know the difference; it just reflects
+// whatever state comes back.
+sceneTiles.forEach((tile) => {
+  tile.addEventListener('click', () => {
+    const scene = tile.dataset.scene;
+    sendCommand('SELECT:' + scene, tile);
+  });
+});
+
+// ---- Brightness slider ----
+// Only sends a command once the user releases the slider (the 'change'
+// event), not on every pixel of drag — dragging fires the 'input' event
+// continuously, which we use just to suppress remote status updates from
+// fighting the drag, without spamming BLE traffic on every tick.
+brightnessSlider.addEventListener('input', () => {
+  brightnessSliderActive = true;
+});
+
+brightnessSlider.addEventListener('change', () => {
+  const val = brightnessSlider.value;
+  sendCommand('BRIGHT:' + val);
+  brightnessSliderActive = false;
+});
+
 function showToast(msg) {
   toast.textContent = msg;
   toast.classList.remove('hidden');
@@ -512,7 +646,7 @@ async function handleStartTap(buttonEl) {
     sceneName.textContent = '—';
     timerDisplay.textContent = '00:00';
     nextEvent.textContent = '';
-    renderButtons('IDLE');
+    renderButtons('IDLE', 'HADES');
   }
 }
 
@@ -523,7 +657,7 @@ async function handleStopTap(buttonEl) {
   await sendCommand('STOP', buttonEl);
 }
 
-function renderButtons(runState) {
+function renderButtons(runState, scene) {
   controls.innerHTML = '';
   const make = (label, cls, onClick) => {
     const b = document.createElement('button');
@@ -533,21 +667,35 @@ function renderButtons(runState) {
     return b;
   };
 
-  if (runState === 'IDLE') {
+  if (runState === 'IDLE' && scene === 'HADES') {
+    // Hades is loaded but not started — this is the only case that needs
+    // a Start button, since every other scene starts the instant it's
+    // selected.
     controls.appendChild(make('Start', 'primary', handleStartTap));
   } else if (runState === 'RUNNING' || runState === 'SCHEDULED') {
+    // Stop is the ONLY way to go fully dark, so it's always available
+    // any time something is actively playing or counting down —
+    // regardless of which scene.
     controls.appendChild(make('Stop', 'danger', handleStopTap));
   }
+  // IDLE with a non-Hades scene: nothing to show — just wait for a tile tap.
+}
+
+function updateSceneTiles(scene) {
+  sceneTiles.forEach((tile) => {
+    tile.classList.toggle('selected', tile.dataset.scene === scene);
+  });
 }
 
 function handleStatus(value) {
-  // Format: STATE|elapsedMs|fireName|msUntilNext
+  // Format: STATE|elapsedMs|fireOrSceneName|msUntilNext|selectedScene|brightness
   const parts = value.split('|');
-  if (parts.length < 4) return;
+  if (parts.length < 6) return;
 
-  const [state, elapsedStr, fire, nextStr] = parts;
+  const [state, elapsedStr, fire, nextStr, scene, brightnessStr] = parts;
   const elapsed = parseInt(elapsedStr, 10) || 0;
   const msUntilNext = parseInt(nextStr, 10);
+  const brightness = parseInt(brightnessStr, 10);
 
   // While our own local countdown is actively driving the "Starting
   // in…" display, don't let a firmware status overwrite it — the local
@@ -560,10 +708,11 @@ function handleStatus(value) {
     sceneName.textContent = FIRE_LABELS[fire] || fire;
     timerDisplay.textContent = formatMs(elapsed);
 
-    const isFlare = (fire === 'RF1' || fire === 'RF2' || fire === 'RF3');
+    const isFlare = (fire === 'RF1' || fire === 'RF2' || fire === 'RF3' || fire === 'EXPLOSION');
     setFlareBackground(isFlare);
 
-    if (state === 'RUNNING' && msUntilNext >= 0) {
+    // Only relevant for Hades — the standalone scenes never set msUntilNext.
+    if (state === 'RUNNING' && scene === 'HADES' && msUntilNext >= 0) {
       const nextWindowFire = guessNextFire(fire, elapsed);
       nextEvent.innerHTML = 'Next: <span class="next-value">' + nextWindowFire + ' in ' + formatSecondsShort(msUntilNext) + '</span>';
     } else {
@@ -571,9 +720,23 @@ function handleStatus(value) {
     }
   }
 
-  if (state !== lastRenderedState) {
-    lastRenderedState = state;
-    renderButtons(state);
+  if (!brightnessSliderActive && !isNaN(brightness)) {
+    brightnessSlider.value = brightness;
+  }
+
+  if (scene !== lastRenderedScene) {
+    lastRenderedScene = scene;
+    updateSceneTiles(scene);
+  }
+
+  // Re-render controls whenever EITHER the run state OR the selected
+  // scene changes — e.g. Explosion finishing and auto-returning to BF1
+  // keeps state as RUNNING throughout, but the controls (and which tile
+  // is selected) still need to reflect that BF1 is now active.
+  const controlsKey = state + '|' + scene;
+  if (controlsKey !== lastRenderedState) {
+    lastRenderedState = controlsKey;
+    renderButtons(state, scene);
   }
 }
 
@@ -699,6 +862,8 @@ function onDisconnected() {
   nextEvent.textContent = '';
   setFlareBackground(false);
   lastRenderedState = null;
+  lastRenderedScene = null;
+  updateSceneTiles(null); // clear all tile highlights
 }
 
 connectBtn.addEventListener('click', connectBLE);
