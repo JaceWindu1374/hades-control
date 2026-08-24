@@ -242,7 +242,7 @@
 
   <div id="connectScreen" class="connect-screen">
     <h1>Hades Hair Control</h1>
-    <p>Connect to the headpiece over Bluetooth to start, pause, and stop the fire sequence.</p>
+    <p>Connect to the headpiece over Bluetooth to start and stop the fire sequence, synced with the audio.</p>
     <button class="primary" id="connectBtn" style="max-width:220px;">Connect</button>
     <div class="error-msg hidden" id="errorMsg"></div>
   </div>
@@ -255,7 +255,14 @@
         <span class="conn-dot"></span>
         <span id="connLabel">Connecting…</span>
       </div>
+      <div class="conn-pill" id="audioPill" style="margin-left:8px; cursor:pointer;">
+        <span class="conn-dot" id="audioDot"></span>
+        <span id="audioLabel">No audio</span>
+      </div>
     </div>
+
+    <audio id="audioEl" preload="auto"></audio>
+    <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
 
     <div class="hud">
       <div class="scene-label" id="runStateLabel">IDLE</div>
@@ -298,9 +305,92 @@ const timerDisplay = document.getElementById('timerDisplay');
 const nextEvent = document.getElementById('nextEvent');
 const controls = document.getElementById('controls');
 const toast = document.getElementById('toast');
+const audioPill = document.getElementById('audioPill');
+const audioDot = document.getElementById('audioDot');
+const audioLabel = document.getElementById('audioLabel');
+const audioEl = document.getElementById('audioEl');
+const audioFileInput = document.getElementById('audioFileInput');
 
 let writeInProgress = false;
 let toastTimeout = null;
+let audioLoaded = false;
+
+const SCHEDULE_LEAD_MS = 3000; // must give the ESP32 enough lead time to receive + parse the command before the countdown ends
+let scheduledAudioTimeout = null;
+let countdownInterval = null;
+
+// ---- Local audio caching (IndexedDB) ----
+// Keeps the MP3 entirely on-device — never uploaded anywhere — so it only
+// needs to be selected once, ever, and is remembered automatically after
+// that on every future visit to this page.
+const DB_NAME = 'hades-audio-db';
+const STORE_NAME = 'files';
+const AUDIO_KEY = 'mp3';
+
+function openAudioDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(STORE_NAME); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveAudioBlob(blob) {
+  const db = await openAudioDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(blob, AUDIO_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadAudioBlob() {
+  const db = await openAudioDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(AUDIO_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function setAudioReady(isReady) {
+  audioLoaded = isReady;
+  audioLabel.textContent = isReady ? 'Audio loaded' : 'No audio — tap to load';
+  audioPill.classList.toggle('connected', isReady);
+}
+
+async function initAudio() {
+  try {
+    const blob = await loadAudioBlob();
+    if (blob) {
+      audioEl.src = URL.createObjectURL(blob);
+      setAudioReady(true);
+    }
+  } catch (err) {
+    console.error('Failed to load cached audio:', err);
+  }
+}
+
+audioPill.addEventListener('click', () => audioFileInput.click());
+
+audioFileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    await saveAudioBlob(file);
+    audioEl.src = URL.createObjectURL(file);
+    setAudioReady(true);
+    showToast('Audio loaded and saved for next time');
+  } catch (err) {
+    console.error('Failed to save audio:', err);
+    showToast('Failed to save audio');
+  }
+});
+
+initAudio();
 
 function showToast(msg) {
   toast.textContent = msg;
@@ -324,24 +414,83 @@ function setFlareBackground(isFlare) {
   document.body.classList.toggle('flare-active', isFlare);
 }
 
+// Cancels any pending scheduled audio start and the local countdown timer
+// — used whenever Stop is pressed, so a countdown-in-progress can't fire
+// audio after the user has already cancelled.
+function cancelScheduledAudio() {
+  if (scheduledAudioTimeout) {
+    clearTimeout(scheduledAudioTimeout);
+    scheduledAudioTimeout = null;
+  }
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+}
+
+// Drives the "Starting in 3… 2… 1…" HUD display using the browser's own
+// high-resolution clock (performance.now()), independent of the ESP32 —
+// each side counts down the same known duration on its own local clock
+// rather than reacting to a live signal at the actual start moment.
+function beginCountdownUI(startAtPerf) {
+  clearInterval(countdownInterval);
+  countdownInterval = setInterval(() => {
+    const remaining = startAtPerf - performance.now();
+    if (remaining <= 0) {
+      clearInterval(countdownInterval);
+      countdownInterval = null;
+      return;
+    }
+    runStateLabel.textContent = 'STARTING';
+    sceneName.textContent = 'Get Ready';
+    timerDisplay.textContent = (remaining / 1000).toFixed(1) + 's';
+    nextEvent.textContent = '';
+  }, 100);
+}
+
+async function handleStartTap(buttonEl) {
+  if (!audioLoaded) {
+    showToast('Load audio first (tap the audio pill)');
+    return;
+  }
+
+  const ok = await sendCommand('SCHEDULE:' + SCHEDULE_LEAD_MS, buttonEl);
+  if (!ok) return; // sendCommand already surfaced a failure toast
+
+  // Both the ESP32 (via SCHEDULE:<ms>) and this page now independently
+  // count down the SAME duration from THIS moment, each on its own local
+  // clock — this is what keeps the LEDs and audio in sync without
+  // depending on a live signal at the actual start instant.
+  const startAtPerf = performance.now() + SCHEDULE_LEAD_MS;
+  beginCountdownUI(startAtPerf);
+
+  scheduledAudioTimeout = setTimeout(() => {
+    audioEl.currentTime = 0;
+    audioEl.play().catch((err) => console.error('Audio play failed:', err));
+  }, SCHEDULE_LEAD_MS);
+}
+
+async function handleStopTap(buttonEl) {
+  cancelScheduledAudio();
+  audioEl.pause();
+  audioEl.currentTime = 0;
+  await sendCommand('STOP', buttonEl);
+}
+
 function renderButtons(runState) {
   controls.innerHTML = '';
-  const make = (label, cls, cmd) => {
+  const make = (label, cls, onClick) => {
     const b = document.createElement('button');
     b.textContent = label;
     if (cls) b.className = cls;
-    b.onclick = () => sendCommand(cmd, b);
+    b.onclick = () => onClick(b);
     return b;
   };
 
   if (runState === 'IDLE') {
-    controls.appendChild(make('Start', 'primary', 'START'));
-  } else if (runState === 'RUNNING') {
-    controls.appendChild(make('Pause', 'primary', 'PAUSE'));
-    controls.appendChild(make('Stop', 'danger', 'STOP'));
-  } else if (runState === 'PAUSED') {
-    controls.appendChild(make('Resume', 'primary', 'RESUME'));
-    controls.appendChild(make('Stop', 'danger', 'STOP'));
+    controls.appendChild(make('Start', 'primary', handleStartTap));
+  } else if (runState === 'RUNNING' || runState === 'SCHEDULED') {
+    controls.appendChild(make('Stop', 'danger', handleStopTap));
   }
 }
 
@@ -354,20 +503,26 @@ function handleStatus(value) {
   const elapsed = parseInt(elapsedStr, 10) || 0;
   const msUntilNext = parseInt(nextStr, 10);
 
-  runStateLabel.textContent = state;
-  sceneName.textContent = FIRE_LABELS[fire] || fire;
-  timerDisplay.textContent = formatMs(elapsed);
+  // While our own local countdown is actively driving the "Starting
+  // in…" display, don't let a firmware status overwrite it — the local
+  // clock is the authority for that brief window since it's what audio
+  // playback is timed against.
+  const localCountdownActive = (countdownInterval !== null);
 
-  const isFlare = (fire === 'RF1' || fire === 'RF2' || fire === 'RF3');
-  setFlareBackground(isFlare);
+  if (!localCountdownActive) {
+    runStateLabel.textContent = state;
+    sceneName.textContent = FIRE_LABELS[fire] || fire;
+    timerDisplay.textContent = formatMs(elapsed);
 
-  if (state === 'RUNNING' && msUntilNext >= 0) {
-    const nextWindowFire = guessNextFire(fire, elapsed);
-    nextEvent.innerHTML = 'Next: <span class="next-value">' + nextWindowFire + ' in ' + formatSecondsShort(msUntilNext) + '</span>';
-  } else if (state === 'IDLE') {
-    nextEvent.textContent = '';
-  } else {
-    nextEvent.textContent = '';
+    const isFlare = (fire === 'RF1' || fire === 'RF2' || fire === 'RF3');
+    setFlareBackground(isFlare);
+
+    if (state === 'RUNNING' && msUntilNext >= 0) {
+      const nextWindowFire = guessNextFire(fire, elapsed);
+      nextEvent.innerHTML = 'Next: <span class="next-value">' + nextWindowFire + ' in ' + formatSecondsShort(msUntilNext) + '</span>';
+    } else {
+      nextEvent.textContent = '';
+    }
   }
 
   if (state !== lastRenderedState) {
@@ -393,11 +548,11 @@ function guessNextFire(currentFire, elapsedMs) {
 }
 
 async function sendCommand(cmd, buttonEl) {
-  if (!commandChar) return;
+  if (!commandChar) return false;
 
   // Prevent overlapping GATT operations — sending a second command while
   // one is still in flight is a common cause of silent drops on BLE.
-  if (writeInProgress) return;
+  if (writeInProgress) return false;
   writeInProgress = true;
   if (buttonEl) buttonEl.disabled = true;
 
@@ -434,6 +589,7 @@ async function sendCommand(cmd, buttonEl) {
 
   if (buttonEl) buttonEl.disabled = false;
   writeInProgress = false;
+  return succeeded;
 }
 
 async function connectBLE() {
@@ -481,6 +637,8 @@ async function connectBLE() {
 }
 
 function onDisconnected() {
+  cancelScheduledAudio();
+  audioEl.pause();
   connPill.classList.remove('connected');
   connLabel.textContent = 'Disconnected';
   controls.innerHTML = '';
