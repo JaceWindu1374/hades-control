@@ -348,6 +348,12 @@
       <span class="icon">☀</span>
     </div>
 
+    <div class="brightness-row hidden" id="lightningFreqRow">
+      <span class="icon">🌦️</span>
+      <input type="range" id="lightningFreqSlider" min="0" max="100" value="50">
+      <span class="icon">⛈️</span>
+    </div>
+
     <audio id="audioEl" preload="auto"></audio>
     <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
 
@@ -416,10 +422,13 @@ const audioLabel = document.getElementById('audioLabel');
 const audioEl = document.getElementById('audioEl');
 const audioFileInput = document.getElementById('audioFileInput');
 const brightnessSlider = document.getElementById('brightnessSlider');
+const lightningFreqRow = document.getElementById('lightningFreqRow');
+const lightningFreqSlider = document.getElementById('lightningFreqSlider');
 const sceneGrid = document.getElementById('sceneGrid');
 const sceneTiles = sceneGrid.querySelectorAll('.scene-tile');
 
 let brightnessSliderActive = false; // true while the user is actively dragging — suppresses remote status updates from fighting the drag
+let lightningFreqSliderActive = false; // same idea, for the frequency slider
 
 let writeInProgress = false;
 let toastTimeout = null;
@@ -554,6 +563,16 @@ brightnessSlider.addEventListener('change', () => {
   const val = brightnessSlider.value;
   sendCommand('BRIGHT:' + val).catch((err) => console.error('Brightness command error:', err));
   brightnessSliderActive = false;
+});
+
+lightningFreqSlider.addEventListener('input', () => {
+  lightningFreqSliderActive = true;
+});
+
+lightningFreqSlider.addEventListener('change', () => {
+  const val = lightningFreqSlider.value;
+  sendCommand('LIGHTFREQ:' + val).catch((err) => console.error('Lightning frequency command error:', err));
+  lightningFreqSliderActive = false;
 });
 
 function showToast(msg) {
@@ -692,14 +711,15 @@ function updateSceneTiles(scene) {
 }
 
 function handleStatus(value) {
-  // Format: STATE|elapsedMs|fireOrSceneName|msUntilNext|selectedScene|brightness
+  // Format: STATE|elapsedMs|fireOrSceneName|msUntilNext|selectedScene|brightness|lightningFrequency
   const parts = value.split('|');
-  if (parts.length < 6) return;
+  if (parts.length < 7) return;
 
-  const [state, elapsedStr, fire, nextStr, scene, brightnessStr] = parts;
+  const [state, elapsedStr, fire, nextStr, scene, brightnessStr, lightFreqStr] = parts;
   const elapsed = parseInt(elapsedStr, 10) || 0;
   const msUntilNext = parseInt(nextStr, 10);
   const brightness = parseInt(brightnessStr, 10);
+  const lightningFreq = parseInt(lightFreqStr, 10);
 
   // While our own local countdown is actively driving the "Starting
   // in…" display, don't let a firmware status overwrite it — the local
@@ -727,6 +747,14 @@ function handleStatus(value) {
   if (!brightnessSliderActive && !isNaN(brightness)) {
     brightnessSlider.value = brightness;
   }
+
+  if (!lightningFreqSliderActive && !isNaN(lightningFreq)) {
+    lightningFreqSlider.value = lightningFreq;
+  }
+
+  // Only show the Lightning frequency slider while Lightning is actually
+  // the selected scene — irrelevant (and confusing) otherwise.
+  lightningFreqRow.classList.toggle('hidden', scene !== 'LIGHTNING');
 
   if (scene !== lastRenderedScene) {
     lastRenderedScene = scene;
